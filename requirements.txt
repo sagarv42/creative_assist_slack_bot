@@ -1,0 +1,6 @@
+slack_bolt
+openai
+python-dotenv
+Pillow
+requests
+openpyxl 
