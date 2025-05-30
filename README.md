@@ -1,19 +1,20 @@
 # Slack OpenAI Image Review Bot
 
-This project is a Python-based Slack bot. When an image is uploaded to a designated Slack channel, the bot performs the following actions:
+This project is a Python-based Slack bot. When an image is uploaded to a designated Slack channel **along with an @mention of the bot**, the bot performs the following actions:
 1.  Downloads the uploaded image.
 2.  Collects a set of 'n' example images from a local directory.
 3.  Reads corresponding performance data for these example images from a local CSV file.
 4.  Sends the newly uploaded image, along with the 'n' example images and their performance data, to the OpenAI API (e.g., GPT-4o).
 5.  The OpenAI model then reviews and scores the uploaded image, using the provided examples for context.
-6.  Finally, the bot posts this AI-generated review and score back to the Slack channel.
+6.  Finally, the bot posts this AI-generated review and score back to the Slack channel as a threaded reply.
+
+The bot will also respond to simple @mentions without a file, and can provide guidance if a file is uploaded without a mention (though this latter functionality can be disabled in `app.py`).
 
 ## Features
 
 *   **Slack Integration:**
     *   Connects to Slack using Socket Mode.
-    *   Listens for `file_shared` events to detect new image uploads.
-    *   Responds to `app_mention` events.
+    *   Responds to `app_mention` events. If an image is included with the mention, it triggers the review process.
 *   **Image Processing:**
     *   Downloads images shared in Slack.
     *   Reads and processes local example images.
@@ -26,6 +27,12 @@ This project is a Python-based Slack bot. When an image is uploaded to a designa
     *   Loads example image files from a specified local directory.
 *   **Development & Testing:**
     *   Includes a standalone script (`test_openai_vision.py`) to test basic OpenAI vision API integration with a single local image.
+*   **Event Subscriptions:**
+    *   Enable events.
+    *   Subscribe to Bot Events:
+        *   `app_mention`: Allows your bot to receive an event when it's directly mentioned. This is the primary event for triggering image reviews (when an image is included with the mention).
+        *   *(Optional):* `file_shared`: If you re-enable the `file_shared` handler in `app.py`, this event allows your bot to receive an event when a file is shared in a channel it's a part of. The current default behavior for this (if enabled) is to guide the user to @mention the bot for a review.
+        *   *(Optional but Recommended for Robustness if `file_shared` is re-enabled):* `message.channels` (or more specific `message.*` events like `message.im`, `message.mpim`).
 
 ## Prerequisites
 
@@ -102,9 +109,9 @@ This project is a Python-based Slack bot. When an image is uploaded to a designa
     *   **Event Subscriptions:**
         *   Enable events.
         *   Subscribe to Bot Events:
-            *   `app_mention`: Allows your bot to receive an event when it's directly mentioned.
-            *   `file_shared`: Allows your bot to receive an event when a file is shared in a channel it's a part of.
-            *   *(Optional but Recommended for Robustness):* `message.channels` (or more specific `message.*` events like `message.im`, `message.mpim` if your bot operates in those contexts). This helps catch file shares that might arrive as generic messages with a `file_share` subtype, as handled in `app.py`.
+            *   `app_mention`: Allows your bot to receive an event when it's directly mentioned. This is the primary event for triggering image reviews (when an image is included with the mention).
+            *   *(Optional):* `file_shared`: If you re-enable the `file_shared` handler in `app.py`, this event allows your bot to receive an event when a file is shared in a channel it's a part of. The current default behavior for this (if enabled) is to guide the user to @mention the bot for a review.
+            *   *(Optional but Recommended for Robustness if `file_shared` is re-enabled):* `message.channels` (or more specific `message.*` events like `message.im`, `message.mpim`).
     *   **OAuth & Permissions:**
         *   Navigate to the "OAuth & Permissions" page.
         *   Ensure the following Bot Token Scopes are added:
@@ -130,17 +137,12 @@ This project is a Python-based Slack bot. When an image is uploaded to a designa
 
 ## Using the Bot
 
-*   **Image Review:** Upload an image to a channel where the bot is a member. The bot will acknowledge the image, gather the local example images and their CSV data, and then post a review from OpenAI based on all this context.
-*   **Mention:** Mention the bot (e.g., `@YourBotName hello`) to see its direct response.
+*   **Image Review:** In a channel where the bot is a member, **upload an image and @mention the bot in the same message** (e.g., `@YourBotName please review this creative`). The bot will acknowledge the image, gather the local example images and their CSV data, and then post a review from OpenAI based on all this context in a thread.
+*   **Simple Mention:** Mention the bot without a file (e.g., `@YourBotName hello`) to see its direct response.
+*   **Standalone File Upload (If `file_shared` handler is enabled in `app.py`):** If you upload a file without mentioning the bot, and the `handle_file_shared_events` in `app.py` is active, the bot will reply in a thread prompting you to mention it for a review. (Currently, this handler is disabled by default in `app.py`).
 
 ## Testing OpenAI Vision Separately
 
 The `test_openai_vision.py` script allows you to test image sending to OpenAI directly, without the Slack bot.
 
-1.  **Ensure `OPENAI_API_KEY` is in your `.env` file.**
-2.  **Ensure you have a `./test_image.png` file or modify the path in `test_openai_vision.py`.**
-3.  **Run the test script:**
-    ```bash
-    python test_openai_vision.py
-    ```
-4.  The script will output the OpenAI API's description of the image.
+1.  **Ensure `OPENAI_API_KEY` is in your `.env`
