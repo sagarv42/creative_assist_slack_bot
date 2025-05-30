@@ -31,16 +31,10 @@ app = App(token=SLACK_BOT_TOKEN)
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- Local Excel/CSV Configuration for Historic Data ---
-# (Commented out or remove if not used for single historic text block)
-# LOCAL_EXCEL_FILE_PATH = "historic_data.xlsx"
-# EXCEL_SHEET_NAME = "Sheet1"
-# EXCEL_CELL = "A1"
-
 # --- Configuration for Example Images and Performance Data ---
-EXAMPLE_IMAGES_DIR = "./example_images/"  # <<< --- YOU NEED TO CREATE THIS DIRECTORY AND ADD IMAGES
-EXAMPLE_PERFORMANCE_CSV = "./example_performance.csv"  # <<< --- YOU NEED TO CREATE THIS CSV
-NUM_EXAMPLES_TO_INCLUDE = 3  # Number of example images to include in the prompt
+EXAMPLE_IMAGES_DIR = "./res/"  # <<< --- YOU NEED TO CREATE THIS DIRECTORY AND ADD IMAGES
+EXAMPLE_PERFORMANCE_CSV = "./res/Hack_Official_example.csv"  # <<< --- YOU NEED TO CREATE THIS CSV
+NUM_EXAMPLES_TO_INCLUDE = 5  # Number of example images to include in the prompt
 # Expected CSV columns: 'image_filename' (e.g., pic1.jpg), 'performance_info' (e.g., "High engagement, CTR 5%")
 # --- End Example Images Configuration ---
 
@@ -55,9 +49,9 @@ def get_example_context_data(logger):
             logger.error(f"Example images directory not found at: {EXAMPLE_IMAGES_DIR}")
             return []
 
-        df = pd.read_csv(EXAMPLE_PERFORMANCE_CSV)
+        df = pd.read_csv(EXAMPLE_PERFORMANCE_CSV, delimiter='|')
         if 'image_filename' not in df.columns or 'performance_info' not in df.columns:
-            logger.error(f"CSV must contain 'image_filename' and 'performance_info' columns.")
+            logger.error(f"CSV must contain 'image_filename' and 'performance_info' columns (pipe-separated).")
             return []
 
         if len(df) == 0:
@@ -177,36 +171,78 @@ def handle_file_shared_events(body, say, logger):
 
             base64_uploaded_image = base64.b64encode(uploaded_image_bytes).decode("utf-8")
             
-            logger.info(f"Attempting to say initial ack in thread: {thread_ts_to_reply} in channel: {channel_id}") # LOG 3: Log before say
-            say(text=f"Thanks <@{user_id}>! I've received your image. Gathering context and sending to AI for review...", channel=channel_id, thread_ts=thread_ts_to_reply)
+            logger.info(f"Attempting to say initial ack in thread: {thread_ts_to_reply} in channel: {channel_id}") 
+            say(text=f"Thanks <@{user_id}>! I've received your image \"{file_data.get('name')}\". Analyzing it with contextual examples...", channel=channel_id, thread_ts=thread_ts_to_reply)
 
             example_contexts = get_example_context_data(logger)
 
+            # ---- New Prompt Structure ----
+            main_prompt_instructions = f"""You are a creative performance analyst evaluating mobile or desktop ad creatives.
+                                            Your task:
+                                            1. Estimate a creative score from 0–100 based on likely ad performance
+                                            2. Highlight 1–2 visual strengths
+                                            3. Call out 1–2 weaknesses
+                                            4. Suggest 2–3 specific improvements
+                                            5. Summarize the image data that informed your decision
+                                            Be concise but human. Focus on clarity, visual hierarchy, and user impact—not just aesthetics.
+                                            ---
+                                            Please review and score this image based on its visual characteristics
+                                            Respond in this exact format:
+                                            --> Score: ##/100
+                                            --> Strengths:
+                                            • [1-line bullet]
+                                            • [Optional 2nd bullet]
+                                            -->  Weaknesses:
+                                            • [1-line bullet]
+                                            • [Optional 2nd bullet]
+                                            --> Suggestions:
+                                            • [Change 1]
+                                            • [Change 2]
+                                            • [Optional Change 3]
+                                            --> Image Data Summary:
+                                            ---
+                                        """
             prompt_messages_content = [
                 {
                     "type": "text",
-                    "text": f"Please review and score the primary image (the first image presented) based on its visual characteristics and in the context of the following {len(example_contexts)} example images and their performance data. Provide a score (e.g., out of 10) and a brief rationale."
+                    "text": main_prompt_instructions
                 },
                 {
-                    "type": "image_url",
+                    "type": "image_url", # This is the primary image uploaded by the user
                     "image_url": {"url": f"data:{uploaded_image_mimetype};base64,{base64_uploaded_image}"}
                 }
             ]
 
             if not example_contexts:
-                logger.warning("No example contexts found. Proceeding with only the uploaded image.")
-                prompt_messages_content[0]["text"] = "Please review and score this image based on its visual characteristics. Provide a score (e.g., out of 10) and a brief rationale as no example data was available."
+                logger.warning("No example contexts found. Modifying prompt for review without examples.")
+                # Modify main_prompt_instructions if no examples, or add a note.
+                # For now, we'll just proceed, and the "Historic Data for scoring" section will be empty or omitted.
+                # A better approach might be to have a slightly different main_prompt_instructions if no examples.
+                prompt_messages_content.append({
+                    "type": "text",
+                    "text": "Historic Data for scoring:\n• No example data was available for this review."
+                })
             else:
+                historic_data_header = "Historic Data for scoring:"
+                example_data_texts = []
                 for i, ex_data in enumerate(example_contexts):
-                    prompt_messages_content.append({
-                        "type": "text",
-                        "text": f"Example {i+1} (Filename: {ex_data['filename']}): Performance Info - {ex_data['performance_info']}"
-                    })
-                    prompt_messages_content.append({
+                    # For each example, first add its textual description and performance info
+                    example_data_texts.append(
+                        f"--- Example {i+1} (Filename: {ex_data['filename']}) ---\nPerformance Info: {ex_data['performance_info']}\n--- End Example {i+1} ---"
+                    )
+                    # Then add the example image itself
+                    example_data_texts.append({
                         "type": "image_url",
                         "image_url": {"url": f"data:{ex_data['mime_type']};base64,{ex_data['base64_image']}"}
                     })
+                
+                # Add the header for historic data
+                prompt_messages_content.append({"type": "text", "text": historic_data_header})
+                # Add all the example text and image parts
+                prompt_messages_content.extend(example_data_texts) 
             
+            # ---- End New Prompt Structure ----
+
             try:
                 chat_completion = openai_client.chat.completions.create(
                     model="gpt-4o", 
@@ -214,7 +250,7 @@ def handle_file_shared_events(body, say, logger):
                         "role": "user",
                         "content": prompt_messages_content
                     }],
-                    max_tokens=700 
+                    max_tokens=1000 # Increased tokens for the detailed prompt and examples
                 )
                 review = chat_completion.choices[0].message.content
                 logger.info(f"Attempting to say final review in thread: {thread_ts_to_reply} in channel: {channel_id}") # LOG 4: Log before final say
