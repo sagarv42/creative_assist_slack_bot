@@ -42,10 +42,10 @@ This project is a Python-based Slack bot. When an image is uploaded to a designa
 ├── .env                    # For storing API keys and tokens (create this manually)
 ├── .gitignore              # Specifies intentionally untracked files that Git should ignore
 ├── app.py                  # Main Slack bot application logic
-├── example_images/         # Directory to store your example context images
-│   ├── example1.jpg
-│   └── example2.png
-├── example_performance.csv # CSV file with performance data for example images (create this manually)
+├── res/                    # Directory to store your example context images & CSV
+│   ├── Img_1.jpg
+│   ├── Img_2.png
+│   └── Hack_Official_example.csv # CSV file with performance data for example images (create this manually)
 ├── requirements.txt        # Python dependencies
 └── test_openai_vision.py   # Script to test OpenAI vision API with a single local image
 ```
@@ -74,23 +74,23 @@ This project is a Python-based Slack bot. When an image is uploaded to a designa
     ```
 
 5.  **Prepare Local Example Images and Performance CSV:**
-    *   **Create `example_images/` directory:** In the project root, create a directory named `example_images` (or update `EXAMPLE_IMAGES_DIR` in `app.py` if you choose a different name/path).
-    *   **Add Example Images:** Place your example image files (e.g., `.jpg`, `.png`) into this directory.
-    *   **Create `example_performance.csv`:** In the project root, create a CSV file named `example_performance.csv` (or update `EXAMPLE_PERFORMANCE_CSV` in `app.py`).
-        *   This CSV must contain at least two columns: `image_filename` and `performance_info`.
-        *   Example content for `example_performance.csv`:
+    *   **Create `res/` directory:** In the project root, create a directory named `res` (or update `EXAMPLE_IMAGES_DIR` in `app.py` if you choose a different name/path).
+    *   **Add Example Images:** Place your example image files (e.g., `.jpg`, `.png`) into this `res/` directory.
+    *   **Create `Hack_Official_example.csv` in `res/`:** In the `res/` directory, create a CSV file named `Hack_Official_example.csv` (or update `EXAMPLE_PERFORMANCE_CSV` in `app.py`).
+        *   This CSV must be **pipe-separated** (using `|` as the delimiter) and contain at least two columns: `image_filename` and `performance_info`.
+        *   Example content for `Hack_Official_example.csv`:
             ```csv
-            image_filename,performance_info
-            example1.jpg,"Achieved high click-through rates (5%) and strong user engagement."
-            example2.png,"Performed well in A/B tests for brand recall, but lower conversion."
-            another_pic.jpeg,"Excellent for social media shares, mediocre on direct sales."
+            image_filename|performance_info
+            example1.jpg|"Achieved high click-through rates (5%) and strong user engagement."
+            example2.png|"Performed well in A/B tests for brand recall, but lower conversion."
+            another_pic.jpeg|"Excellent for social media shares, mediocre on direct sales."
             ```
     *   **Configure `app.py` (if paths/settings differ from defaults):**
-        *   Open `app.py` and verify/update these constants if needed:
+        *   Open `app.py`. The relevant constants are now at the top of the file:
             ```python
-            EXAMPLE_IMAGES_DIR = "./example_images/"
-            EXAMPLE_PERFORMANCE_CSV = "./example_performance.csv"
-            NUM_EXAMPLES_TO_INCLUDE = 3 # Adjust how many examples are sent
+            EXAMPLE_IMAGES_DIR = "./res/"
+            EXAMPLE_PERFORMANCE_CSV = "./res/Hack_Official_example.csv"
+            NUM_EXAMPLES_TO_INCLUDE = 5 # Adjust how many examples are sent
             ```
 
 6.  **Configure Slack App:**

@@ -98,12 +98,6 @@ def get_example_context_data(logger):
         logger.error(f"Error preparing example context data: {e}")
         return []
 
-# Old get_historic_data function (can be removed or kept if you want both functionalities)
-# def get_historic_data():
-#     """Fetches historic data for context from a local Excel file."""
-#     # ... (implementation for reading single text block from Excel)
-#     pass 
-
 @app.event("file_shared")
 def handle_file_shared_events(body, say, logger):
     """Handles file_shared events, processing the uploaded image with context from other examples."""
@@ -261,7 +255,7 @@ def handle_file_shared_events(body, say, logger):
 
         else:
             logger.info(f"File shared is not an image: {slack_mimetype}. Skipping.")
-            # say(text=f"<@{user_id}>, I can only process image files. The file you shared was a {slack_mimetype}.", channel=channel_id, thread_ts=thread_ts_to_reply)
+            say(text=f"<@{user_id}>, I can only process image files. The file you shared was a {slack_mimetype}.", channel=channel_id, thread_ts=thread_ts_to_reply)
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error downloading file: {e}")
@@ -297,7 +291,6 @@ def handle_generic_message_events(body, logger, say):
 
     # Check if it's a message from the bot itself to avoid loops
     if event.get("user") == bot_id or event.get("bot_id") is not None:
-        # logger.info("handle_generic_message_events: Ignoring event from bot itself.")
         return
         
     # If it's a file_share message subtype, let the dedicated file_shared handler process it.
@@ -321,8 +314,8 @@ def handle_generic_message_events(body, logger, say):
         if event.get("files") and isinstance(event.get("files"), list) and len(event.get("files")) > 0:
             # The handle_file_shared_events function is designed to be called by the Bolt framework
             # with a specific structure for the `body` and `event` when the event type is `file_shared`.
-            # Here, the event type is `message` with `subtype: 'file_shared'`.
-            # The `event` object within the `body` for a `message` event with `subtype: 'file_shared'`
+            # Here, the event type is `message` with `subtype: 'file_share'`.
+            # The `event` object within the `body` for a `message` event with `subtype: 'file_share'`
             # is slightly different from a direct `file_shared` event type's event object.
             # Specifically, the file_id is inside event['files'][0]['id'] for this message subtype.
             # The original `@app.event('file_shared')` handler expects `event['file_id']`.
@@ -345,7 +338,6 @@ def handle_generic_message_events(body, logger, say):
         return
 
     if event_subtype == "message_deleted":
-        # logger.info(f"handle_generic_message_events: Ignoring deleted message event.")
         return
     
     if event_subtype is not None:
