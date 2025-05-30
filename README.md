@@ -141,6 +141,27 @@ The bot will also respond to simple @mentions without a file, and can provide gu
 *   **Simple Mention:** Mention the bot without a file (e.g., `@YourBotName hello`) to see its direct response.
 *   **Standalone File Upload (If `file_shared` handler is enabled in `app.py`):** If you upload a file without mentioning the bot, and the `handle_file_shared_events` in `app.py` is active, the bot will reply in a thread prompting you to mention it for a review. (Currently, this handler is disabled by default in `app.py`).
 
+## Demo Explanation / Pitch
+
+Here are a few ways to quickly explain the project for a demonstration:
+
+**Option 1 (Concise Value & How):**
+> "This is the 'Creative Scoring Bot,' a Slack tool we've built to provide instant, AI-driven feedback on ad creatives. When a user @mentions the bot with an image, our Python application downloads it, combines it with a curated set of internal example images and their past performance data, and then sends it all to OpenAI's GPT-4o. The AI analyzes the creative within this rich context and delivers a score, strengths, weaknesses, and actionable suggestions right back into the Slack thread."
+
+**Option 2 (More Technical 'What it is'):**
+> "We've developed the 'Creative Scoring Bot,' a Python-based Slack application using the Bolt framework and Socket Mode. It listens for @mentions that include an image. Upon receiving one, it processes the uploaded image alongside locally stored example creatives and a corresponding CSV of their performance metrics. This package is then sent to the OpenAI GPT-4o API, which returns a structured analysis—including a score and improvement tips—that the bot posts as a threaded reply in Slack."
+
+**Option 3 (Benefit-Oriented):**
+> "To help our team get faster, data-informed feedback on visual creatives, we built the 'Creative Scoring Bot.' Simply @mention it in Slack with your ad image. The bot then intelligently uses a collection of our own successful and challenging example ads, along with their performance history, to give OpenAI's latest model the right context. Within moments, you get a detailed review with a score and specific suggestions, helping us iterate and improve creative effectiveness more efficiently."
+
+**Key talking points for a demo:**
+*   **Trigger:** `@mention` the bot with an image.
+*   **Core Action:** AI-driven analysis of the uploaded image.
+*   **Contextual Learning:** Uses *internal example images* and *their performance data* to inform the AI's review.
+*   **Technology:** Slack (Bolt, Socket Mode), Python, OpenAI (GPT-4o).
+*   **Output:** Score, strengths, weaknesses, suggestions.
+*   **Delivery:** Threaded reply in Slack.
+
 ## Testing OpenAI Vision Separately
 
 The `test_openai_vision.py` script allows you to test image sending to OpenAI directly, without the Slack bot.
