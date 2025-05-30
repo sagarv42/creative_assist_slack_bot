@@ -45,6 +45,12 @@ MAX_EVENT_ID_AGE_SECONDS = 300  # 5 minutes, adjust as needed
 EVENT_ID_TIMESTAMPS = {} # Stores event_id: arrival_time
 # --- End Globals for Event Deduplication ---
 
+# --- Globals for Mention-Processed File Deduplication ---
+MENTION_PROCESSED_FILE_IDS = set()
+MENTION_FILE_ID_TIMESTAMPS = {}
+MAX_MENTION_FILE_ID_AGE_SECONDS = 60  # 1 minute, adjust as needed
+# --- End Globals for Mention-Processed File Deduplication ---
+
 def get_example_context_data(logger):
     """Fetches 'n' example images and their performance data."""
     examples = []
@@ -105,7 +111,7 @@ def get_example_context_data(logger):
         logger.error(f"Error preparing example context data: {e}")
         return []
 
-@app.event("file_shared")
+# @app.event("file_shared")
 def handle_file_shared_events(body, say, logger):
     current_time = time.time()
     event_id = body.get("event_id")
@@ -134,12 +140,29 @@ def handle_file_shared_events(body, say, logger):
 
     event = body.get("event", {})
     user_id = event.get("user_id")
-    file_id = event.get("file_id")
+    file_id = event.get("file_id") # file_id from the file_shared event
     channel_id = event.get("channel_id")
     original_event_ts = event.get("event_ts") # TS of the file_shared event itself
 
-    logger.info(f"File shared event (ID: {event_id}): User '{user_id}', File '{file_id}', Channel '{channel_id}', Original TS '{original_event_ts}'")
+    # --- Deduplication for files already handled by app_mention ---
+    # Clean up old mention-processed file IDs first
+    expired_mention_file_ids = [
+        fid for fid, ts in list(MENTION_FILE_ID_TIMESTAMPS.items())
+        if current_time - ts > MAX_MENTION_FILE_ID_AGE_SECONDS
+    ]
+    for fid in expired_mention_file_ids:
+        MENTION_PROCESSED_FILE_IDS.discard(fid)
+        if fid in MENTION_FILE_ID_TIMESTAMPS:
+            del MENTION_FILE_ID_TIMESTAMPS[fid]
 
+    if file_id and file_id in MENTION_PROCESSED_FILE_IDS:
+        logger.info(f"handle_file_shared_events: File {file_id} (Event ID: {event_id}) was recently processed by app_mention. Skipping.")
+        return
+    # --- End Mention-Processed File Deduplication ---
+
+    logger.info(f"File shared event (ID: {event_id}, no mention detected by this handler): User '{user_id}', File '{file_id}', Channel '{channel_id}', Original TS '{original_event_ts}'")
+
+    # Check if the bot itself shared the file
     authorizations = body.get("authorizations", [])
     if authorizations and len(authorizations) > 0:
         bot_user_id_from_auth = authorizations[0].get("user_id")
@@ -147,76 +170,49 @@ def handle_file_shared_events(body, say, logger):
             logger.info(f"File {file_id} (Event ID: {event_id}) was shared by the bot itself ({user_id}). Ignoring event.")
             return
 
-    if not all([user_id, file_id, channel_id, original_event_ts]): # original_event_ts needed as a fallback
+    # Check for missing critical information for sending a reply
+    if not all([user_id, file_id, channel_id, original_event_ts]):
         logger.error(
-            f"File_shared event (ID: {event_id}) is missing critical information. "
+            f"File_shared event (ID: {event_id}) is missing critical information for reply. "
             f"User: {user_id}, File: {file_id}, Channel: {channel_id}, Original TS: {original_event_ts}. Cannot reply properly."
         )
-        if channel_id and user_id and file_id:
+        # Attempt a non-threaded reply if only original_event_ts is the main issue but others are okay for a general message
+        if channel_id and user_id and file_id: 
             try:
-                # Using say for non-threaded fallback (missing info)
                 say(
                     channel=channel_id,
-                    text=f"Hi <@{user_id}>, I noticed you uploaded file. "
-                         f"If you want me to review it, please @mention me directly with the file. Thanks!"
+                    text=f"Hi <@{user_id}>, I noticed you uploaded file. " 
+                         f"If you want me to review it, please @mention me directly with the file. Thanks! (Error: Missing event details for threading)"
                 )
                 logger.info(f"Sent non-threaded fallback (missing info) using say to {user_id} in {channel_id} for file {file_id} (Event ID: {event_id}).")
-            except Exception as e_post_fallback:
-                logger.error(f"Error sending non-threaded fallback message (missing info) using say for event {event_id}: {e_post_fallback}")
+            except Exception as e_say_fallback:
+                logger.error(f"Error sending non-threaded fallback message (missing info) for event {event_id}: {e_say_fallback}")
         return
 
-    # --- Attempt to get the actual message_ts for threading from files_info ---
-    event_ts_to_use = original_event_ts # Default to original event_ts
-    try:
-        file_info_response = app.client.files_info(file=file_id)
-        if file_info_response and file_info_response.get("ok"):
-            file_data = file_info_response.get("file")
-            if file_data and file_data.get("shares") and \
-               isinstance(file_data["shares"].get("public"), dict) and \
-               channel_id in file_data["shares"]["public"]:
-                share_info_list = file_data["shares"]["public"][channel_id]
-                if share_info_list and isinstance(share_info_list, list) and len(share_info_list) > 0:
-                    # Taking the first share message in that channel. 
-                    # Slack's behavior typically links the file_shared event to the most recent share message.
-                    actual_message_ts = share_info_list[0].get("ts")
-                    if actual_message_ts:
-                        event_ts_to_use = actual_message_ts
-                        logger.info(f"Using actual message_ts '{actual_message_ts}' from files_info for threading file {file_id} (Event ID: {event_id}).")
-                    else:
-                        logger.warning(f"Could not find 'ts' in share_info for file {file_id} in channel {channel_id}. Will use original event_ts '{original_event_ts}'. Event ID: {event_id}")
-                else:
-                    logger.warning(f"Share_info_list empty or not a list for file {file_id} in channel {channel_id}. Will use original event_ts '{original_event_ts}'. Event ID: {event_id}")
-            else:
-                logger.warning(f"No public shares found for file {file_id} in channel {channel_id}, or shares format unexpected. Will use original event_ts '{original_event_ts}'. Event ID: {event_id}")
-        else:
-            logger.error(f"Failed to get file_info for {file_id}: {file_info_response.get('error', 'Unknown error') if file_info_response else 'No response'}. Event ID: {event_id}")
-    except Exception as e_fi:
-        logger.error(f"Error calling files_info for {file_id} (Event ID: {event_id}): {e_fi}. Will use original event_ts '{original_event_ts}'.")
-    # --- End files_info logic ---
-
+    # If we've reached here, it's a standalone file upload not handled by a mention,
+    # and not a duplicate event_id. Send the standard message using original_event_ts.
     reply_message = (
         f"Hi <@{user_id}>, I see you uploaded a file. "
         f"If you'd like me to review it, please mention me with `@Creative Scoring Bot` directly along with the file. Thanks!"
     )
 
     try:
-        # Using say for the primary threaded message
         say(
             channel=channel_id,
             text=reply_message,
-            thread_ts=event_ts_to_use
+            thread_ts=original_event_ts # Use the original_event_ts directly
         )
-        logger.info(f"Sent THREADED guidance (using say, ts: {event_ts_to_use}) to user {user_id} in channel {channel_id} for file {file_id} (Event ID: {event_id}).")
+        logger.info(f"Sent THREADED guidance (using say, ts: {original_event_ts}) to user {user_id} in channel {channel_id} for file {file_id} (Event ID: {event_id}). This was a standalone file upload.")
     except Exception as e:
-        logger.error(f"Error sending THREADED message (using say, ts: {event_ts_to_use}) for file_shared event {event_id}: {e}")
+        logger.error(f"Error sending THREADED message (using say, ts: {original_event_ts}) for standalone file_shared event {event_id}: {e}")
+        # Fallback to non-threaded if threaded reply fails
         try:
-            # Using say for non-threaded fallback after primary send error
             say(
                 channel=channel_id,
                 text=f"Sorry <@{user_id}>, I tried to reply in a thread about your file `{file_id}` but encountered an issue. "
-                     f"Please @mention me directly with the file for a review. Thanks! (Details: Could not thread using {event_ts_to_use})"
+                     f"Please @mention me directly with the file for a review. Thanks!"
             )
-            logger.info(f"Sent NON-THREADED fallback (using say) after threaded send failed for file {file_id} (Event ID: {event_id}) to user {user_id}.")
+            logger.info(f"Sent NON-THREADED fallback (using say) for standalone file {file_id} (Event ID: {event_id}) to user {user_id} after threaded send failed.")
         except Exception as e_fallback_critical:
             logger.error(f"Error sending critical NON-THREADED fallback message (using say) for event {event_id}: {e_fallback_critical}")
 
@@ -239,19 +235,25 @@ def handle_app_mention_events(body, say, logger):
     # Check if files were uploaded with the mention
     uploaded_files = event.get("files")
     if uploaded_files and isinstance(uploaded_files, list) and len(uploaded_files) > 0:
-        file_id = uploaded_files[0].get("id") # Get ID of the first file
+        mentioned_file_id = uploaded_files[0].get("id")
 
-        if not file_id:
+        if not mentioned_file_id:
             logger.error(f"App mention by {user_id} included files, but file_id was missing. Files: {uploaded_files}")
             say(f"Sorry <@{user_id}>, I saw you uploaded a file with your mention, but I couldn't get its ID.", channel=channel_id, thread_ts=thread_ts_to_reply)
             return
 
-        logger.info(f"App mention by {user_id} in channel {channel_id} included file_id: {file_id}. Processing image...")
+        # Mark this file_id as processed by the mention handler to prevent file_shared handler from duplicating
+        current_time_for_mention = time.time()
+        MENTION_PROCESSED_FILE_IDS.add(mentioned_file_id)
+        MENTION_FILE_ID_TIMESTAMPS[mentioned_file_id] = current_time_for_mention
+        logger.info(f"handle_app_mention_events: Marked file_id {mentioned_file_id} as processed by mention (event_ts: {thread_ts_to_reply}).")
+
+        logger.info(f"App mention by {user_id} in channel {channel_id} included file_id: {mentioned_file_id}. Processing image...")
         # --- Start of image processing logic (adapted from handle_file_shared_events) ---
         try:
-            file_info_response = app.client.files_info(file=file_id)
+            file_info_response = app.client.files_info(file=mentioned_file_id)
             if not file_info_response.get("ok"):
-                logger.error(f"Failed to get file info for {file_id}: {file_info_response.get('error')}")
+                logger.error(f"Failed to get file info for {mentioned_file_id}: {file_info_response.get('error')}")
                 say(text=f"Sorry <@{user_id}>, I couldn't retrieve information about the file you shared with your mention.", channel=channel_id, thread_ts=thread_ts_to_reply)
                 return
 
@@ -263,7 +265,7 @@ def handle_app_mention_events(body, say, logger):
                 logger.info(f"Processing uploaded image: {file_data.get('name')} ({slack_mimetype}) from app_mention.")
 
                 if not file_url_private:
-                    logger.error(f"Private download URL not found for the image {file_id} in app_mention.")
+                    logger.error(f"Private download URL not found for the image {mentioned_file_id} in app_mention.")
                     say(text=f"Sorry <@{user_id}>, I couldn't access the image file you shared with your mention.", channel=channel_id, thread_ts=thread_ts_to_reply)
                     return
 
@@ -283,32 +285,32 @@ def handle_app_mention_events(body, say, logger):
 
                 example_contexts = get_example_context_data(logger)
 
-                main_prompt_instructions = (
-                    "You are a creative performance analyst evaluating mobile or desktop ad creatives.\\n"
-                    "Your task:\\n"
-                    "1. Estimate a creative score from 0–100 based on likely ad performance\\n"
-                    "2. Highlight 1–2 visual strengths\\n"
-                    "3. Call out 1–2 weaknesses\\n"
-                    "4. Suggest 2–3 specific improvements\\n"
-                    "5. Summarize the image data that informed your decision\\n"
-                    "Be concise but human. Focus on clarity, visual hierarchy, and user impact—not just aesthetics.\\n"
-                    "---\\n"
-                    "Please review and score this image based on its visual characteristics\\n"
-                    "Respond in this exact format:\\n"
-                    "--> Score: ##/100\\n"
-                    "--> Strengths:\\n"
-                    "• [1-line bullet]\\n"
-                    "• [Optional 2nd bullet]\\n"
-                    "-->  Weaknesses:\\n"
-                    "• [1-line bullet]\\n"
-                    "• [Optional 2nd bullet]\\n"
-                    "--> Suggestions:\\n"
-                    "• [Change 1]\\n"
-                    "• [Change 2]\\n"
-                    "• [Optional Change 3]\\n"
-                    "--> Image Data Summary:\\n"
-                    "---"
-                )
+                main_prompt_instructions = f"""
+                    You are a creative performance analyst evaluating mobile or desktop ad creatives.
+                    Your task:
+                    1. Estimate a creative score from 0–100 based on likely ad performance
+                    2. Highlight 1–2 visual strengths
+                    3. Call out 1–2 weaknesses
+                    4. Suggest 2–3 specific improvements
+                    5. Summarize the image data that informed your decision
+                    Be concise but human. Focus on clarity, visual hierarchy, and user impact—not just aesthetics.
+                    ---
+                    Please review and score this image based on its visual characteristics
+                    Respond in this exact format:
+                    --> Score: ##/100
+                    --> Strengths:
+                    • [1-line bullet]
+                    • [Optional 2nd bullet]
+                    -->  Weaknesses:
+                    • [1-line bullet]
+                    • [Optional 2nd bullet]
+                    --> Suggestions:
+                    • [Change 1]
+                    • [Change 2]
+                    • [Optional Change 3]
+                    --> Image Data Summary:
+                    ---
+                    """
                 prompt_messages_content = [
                     {"type": "text", "text": main_prompt_instructions},
                     {"type": "image_url", "image_url": {"url": f"data:{uploaded_image_mimetype};base64,{base64_uploaded_image}"}}
@@ -341,18 +343,18 @@ def handle_app_mention_events(body, say, logger):
                         max_tokens=1000
                     )
                     review = chat_completion.choices[0].message.content
-                    say(text=f"<@{user_id}>, here's the review for your image \"{file_data.get('name')}\":\\n{review}", channel=channel_id, thread_ts=thread_ts_to_reply)
+                    say(text=f"<@{user_id}>, here's the review for your image {file_data.get('name')}:\n{review}", channel=channel_id, thread_ts=thread_ts_to_reply)
                 except Exception as e:
                     logger.error(f"Error calling OpenAI API during app_mention: {e}")
                     say(text=f"Sorry <@{user_id}>, I encountered an error with the AI review for the image in your mention.", channel=channel_id, thread_ts=thread_ts_to_reply)
             else:
-                logger.info(f"File {file_id} shared with app_mention by {user_id} is not an image: {slack_mimetype}. Replying with help text.")
+                logger.info(f"File {mentioned_file_id} shared with app_mention by {user_id} is not an image: {slack_mimetype}. Replying with help text.")
                 say(text=f"Hi <@{user_id}>! You mentioned me with a file, but I can only process image files. Please try mentioning me with an image.", channel=channel_id, thread_ts=thread_ts_to_reply)
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error downloading file {file_id} from app_mention: {e}")
+            logger.error(f"Error downloading file {mentioned_file_id} from app_mention: {e}")
             say(text=f"Sorry <@{user_id}>, I had trouble downloading the file you shared with your mention.", channel=channel_id, thread_ts=thread_ts_to_reply)
         except Exception as e:
-            logger.error(f"Error processing file {file_id} from app_mention: {e}")
+            logger.error(f"Error processing file {mentioned_file_id} from app_mention: {e}")
             say(text=f"Sorry <@{user_id}>, an unexpected error occurred while processing the file in your mention.", channel=channel_id, thread_ts=thread_ts_to_reply)
         # --- End of image processing logic ---
     else:
