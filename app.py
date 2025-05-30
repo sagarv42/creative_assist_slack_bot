@@ -8,7 +8,8 @@ import requests
 from io import BytesIO
 from PIL import Image
 import base64
-import pandas as pd # For reading local Excel file
+import pandas as pd # For reading local Excel/CSV file
+import random # For selecting example images
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,177 +31,295 @@ app = App(token=SLACK_BOT_TOKEN)
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- Local Excel Configuration ---
-LOCAL_EXCEL_FILE_PATH = "historic_data.xlsx"  # <<< --- YOU NEED TO CHANGE THIS if your file is named differently or elsewhere
-EXCEL_SHEET_NAME = "Sheet1"                  # <<< --- YOU NEED TO CHANGE THIS if your sheet is named differently
-EXCEL_CELL = "A1"                            # <<< --- YOU NEED TO CHANGE THIS if your data is in a different cell
-# --- End Local Excel Configuration ---
+# --- Local Excel/CSV Configuration for Historic Data ---
+# (Commented out or remove if not used for single historic text block)
+# LOCAL_EXCEL_FILE_PATH = "historic_data.xlsx"
+# EXCEL_SHEET_NAME = "Sheet1"
+# EXCEL_CELL = "A1"
 
-def get_historic_data():
-    """Fetches historic data for context from a local Excel file."""
+# --- Configuration for Example Images and Performance Data ---
+EXAMPLE_IMAGES_DIR = "./example_images/"  # <<< --- YOU NEED TO CREATE THIS DIRECTORY AND ADD IMAGES
+EXAMPLE_PERFORMANCE_CSV = "./example_performance.csv"  # <<< --- YOU NEED TO CREATE THIS CSV
+NUM_EXAMPLES_TO_INCLUDE = 3  # Number of example images to include in the prompt
+# Expected CSV columns: 'image_filename' (e.g., pic1.jpg), 'performance_info' (e.g., "High engagement, CTR 5%")
+# --- End Example Images Configuration ---
+
+def get_example_context_data(logger):
+    """Fetches 'n' example images and their performance data."""
+    examples = []
     try:
-        if not os.path.exists(LOCAL_EXCEL_FILE_PATH):
-            logging.error(f"Local Excel file not found at: {LOCAL_EXCEL_FILE_PATH}")
-            return "Error: Local historic data Excel file not found."
+        if not os.path.exists(EXAMPLE_PERFORMANCE_CSV):
+            logger.error(f"Example performance CSV not found at: {EXAMPLE_PERFORMANCE_CSV}")
+            return []
+        if not os.path.isdir(EXAMPLE_IMAGES_DIR):
+            logger.error(f"Example images directory not found at: {EXAMPLE_IMAGES_DIR}")
+            return []
 
-        # Read the specific cell from the Excel file
-        # Use openpyxl engine for .xlsx files
-        df = pd.read_excel(LOCAL_EXCEL_FILE_PATH,
-                           sheet_name=EXCEL_SHEET_NAME,
-                           header=None, # Treat the first row as data if no header
-                           engine='openpyxl')
+        df = pd.read_csv(EXAMPLE_PERFORMANCE_CSV)
+        if 'image_filename' not in df.columns or 'performance_info' not in df.columns:
+            logger.error(f"CSV must contain 'image_filename' and 'performance_info' columns.")
+            return []
+
+        if len(df) == 0:
+            logger.warning("Performance CSV is empty.")
+            return []
+
+        # Select N random examples (or first N if fewer than N available)
+        num_to_sample = min(NUM_EXAMPLES_TO_INCLUDE, len(df))
+        sampled_df = df.sample(n=num_to_sample) if len(df) >= num_to_sample else df
+
+        for _, row in sampled_df.iterrows():
+            image_filename = row['image_filename']
+            performance_info = row['performance_info']
+            image_path = os.path.join(EXAMPLE_IMAGES_DIR, image_filename)
+
+            if not os.path.exists(image_path):
+                logger.warning(f"Example image file not found: {image_path}. Skipping.")
+                continue
+
+            try:
+                with open(image_path, "rb") as image_file:
+                    img_bytes = image_file.read()
+                    pil_image = Image.open(BytesIO(img_bytes))
+                    img_format = pil_image.format.lower()
+                    
+                    mime_type = f"image/{img_format}"
+                    if img_format == 'jpg': mime_type = "image/jpeg"
+                    # Add more specific mimetypes if needed, or rely on common ones
+
+                    base64_image = base64.b64encode(img_bytes).decode("utf-8")
+                    examples.append({
+                        "filename": image_filename,
+                        "performance_info": performance_info,
+                        "base64_image": base64_image,
+                        "mime_type": mime_type
+                    })
+            except Exception as e:
+                logger.error(f"Error processing example image {image_path}: {e}")
         
-        # Try to get data from the specified cell (e.g., A1 -> row 0, col 0)
-        # This requires a bit of care if EXCEL_CELL is like "A1", "B5" etc.
-        # For simplicity, we'll assume A1 means the very first cell (0,0)
-        # A more robust parser for cell notation might be needed for general cases.
-        # For "A1", iloc[0,0] works if it's the first cell.
-        # If EXCEL_CELL is, for example, B2, you'd need to map that to iloc[1,1].
-        # Let's assume for this example EXCEL_CELL = "A1" maps to the first cell [0,0]
-        # This part might need refinement based on how you want to specify the cell.
-        
-        # A simple way for common cell notation like "A1", "B2"
-        col_str = "".join(filter(str.isalpha, EXCEL_CELL))
-        row_str = "".join(filter(str.isdigit, EXCEL_CELL))
-        
-        if not col_str or not row_str:
-            logging.error(f"Invalid Excel cell format: {EXCEL_CELL}. Expected format like 'A1'.")
-            return "Error: Invalid Excel cell format for historic data."
+        logger.info(f"Prepared {len(examples)} examples for context.")
+        return examples
 
-        col_idx = sum([(ord(char.upper()) - ord('A') + 1) * (26**i) for i, char in enumerate(reversed(col_str))]) -1
-        row_idx = int(row_str) - 1
-
-        if row_idx < 0 or col_idx < 0 or row_idx >= len(df) or col_idx >= len(df.columns):
-            logging.error(f"Cell {EXCEL_CELL} is out of bounds for the sheet dimensions.")
-            return "Error: Historic data cell is out of bounds in Excel sheet."
-            
-        description = str(df.iloc[row_idx, col_idx])
-        
-        if pd.isna(description) or not description.strip():
-             logging.warning(f"No data found in Excel file at {LOCAL_EXCEL_FILE_PATH}, sheet '{EXCEL_SHEET_NAME}', cell '{EXCEL_CELL}'.")
-             return "No historical data found in the configured Excel cell."
-
-        return description.strip()
-
-    except FileNotFoundError:
-        logging.error(f"Local Excel file not found at: {LOCAL_EXCEL_FILE_PATH}")
-        return "Error: Local historic data Excel file not found."
     except Exception as e:
-        logging.error(f"An unexpected error occurred while fetching local Excel data: {e}")
-        return f"Unexpected error fetching local Excel data: {e}"
+        logger.error(f"Error preparing example context data: {e}")
+        return []
+
+# Old get_historic_data function (can be removed or kept if you want both functionalities)
+# def get_historic_data():
+#     """Fetches historic data for context from a local Excel file."""
+#     # ... (implementation for reading single text block from Excel)
+#     pass 
 
 @app.event("file_shared")
 def handle_file_shared_events(body, say, logger):
-    """Handles file_shared events, specifically looking for images."""
+    """Handles file_shared events, processing the uploaded image with context from other examples."""
     event = body.get("event", {})
-    file_id = event.get("file_id")
-    user_id = event.get("user_id")
+    logger.info(f"--- Raw file_shared event data (called from @app.event('file_shared') or delegated) ---") 
+    logger.info(event)
+    logger.info(f"----------------------------------")
+
+    # MODIFICATION POINT 2: Get file_id robustly
+    file_id = event.get("file_id") 
+    if not file_id and event.get("files") and isinstance(event.get("files"), list) and len(event.get("files")) > 0:
+        # This handles the case where the event is a message subtype 'file_share'
+        file_id = event.get("files")[0].get("id")
+
+    user_id = event.get("user") # In message events, it's event.user, not event.user_id
+    if not user_id: user_id = event.get("user_id") # Fallback for direct file_shared event type
+    
+    channel_id = event.get("channel") # In message events, it's event.channel
+    if not channel_id: channel_id = event.get("channel_id") # Fallback for direct file_shared event type
+
+    thread_ts_to_reply = event.get("event_ts") # This should be correct for both message subtype and direct event
+    if not thread_ts_to_reply: thread_ts_to_reply = event.get("ts") # Fallback for message.ts if event_ts is missing
 
     if not file_id:
-        logger.error("File ID not found in file_shared event.")
+        logger.error("File ID not found in file_shared event (after checking event.file_id and event.files[0].id). Event dump:")
+        logger.error(event)
+        return
+    
+    if not channel_id or not thread_ts_to_reply:
+        logger.error(f"Could not determine channel_id ({channel_id}) or thread_ts ({thread_ts_to_reply}) for replying.")
+        # Fallback to just saying in channel if essential threading info is missing
+        say(text=f"Sorry <@{user_id}>, there was an issue processing your file notification (missing channel/ts).", channel=channel_id or None)
         return
 
-    logger.info(f"File shared: {file_id} by user {user_id}")
+    logger.info(f"File shared: {file_id} by user {user_id} in channel {channel_id} (event_ts for threading: {thread_ts_to_reply})") # LOG 2: Log processed ts
 
     try:
-        # Get file info using Slack API to check file type and get download URL
         file_info_response = app.client.files_info(file=file_id)
         if not file_info_response.get("ok"):
             logger.error(f"Failed to get file info: {file_info_response.get('error')}")
-            say(f"Sorry <@{user_id}>, I couldn't retrieve information about that file.")
+            say(text=f"Sorry <@{user_id}>, I couldn't retrieve information about that file.", channel=channel_id, thread_ts=thread_ts_to_reply)
             return
 
         file_data = file_info_response.get("file")
-        mimetype = file_data.get("mimetype", "").lower()
+        slack_mimetype = file_data.get("mimetype", "").lower()
         file_url_private = file_data.get("url_private_download")
 
-        # Check if the file is an image
-        if mimetype.startswith("image/"):
-            logger.info(f"Processing image: {file_data.get('name')} ({mimetype})")
+        if slack_mimetype.startswith("image/"):
+            logger.info(f"Processing uploaded image: {file_data.get('name')} ({slack_mimetype})")
 
             if not file_url_private:
-                logger.error("Private download URL not found for the image.")
-                say(f"Sorry <@{user_id}>, I couldn't access the image file to download it.")
+                logger.error("Private download URL not found for the uploaded image.")
+                say(text=f"Sorry <@{user_id}>, I couldn't access the uploaded image file.", channel=channel_id, thread_ts=thread_ts_to_reply)
                 return
 
-            # Download the image
             headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
             response = requests.get(file_url_private, headers=headers, stream=True)
-            response.raise_for_status() # Raise an exception for bad status codes
+            response.raise_for_status()
 
-            # Convert image to base64
-            img = Image.open(BytesIO(response.content))
+            uploaded_image_bytes = response.content
+            uploaded_pil_image = Image.open(BytesIO(uploaded_image_bytes))
+            uploaded_image_format = uploaded_pil_image.format.lower()
+            uploaded_image_mimetype = f"image/{uploaded_image_format}"
+            if uploaded_image_format == 'jpg': uploaded_image_mimetype = "image/jpeg"
+
+            base64_uploaded_image = base64.b64encode(uploaded_image_bytes).decode("utf-8")
             
-            # Optional: Resize image if it's too large (OpenAI has limits)
-            # max_size = (1024, 1024) # Example max dimensions
-            # img.thumbnail(max_size, Image.LANCZOS)
+            logger.info(f"Attempting to say initial ack in thread: {thread_ts_to_reply} in channel: {channel_id}") # LOG 3: Log before say
+            say(text=f"Thanks <@{user_id}>! I've received your image. Gathering context and sending to AI for review...", channel=channel_id, thread_ts=thread_ts_to_reply)
 
-            buffered = BytesIO()
-            image_format = mimetype.split('/')[-1] # e.g., 'jpeg', 'png'
-            if image_format == 'jpg': # common variation
-                image_format = 'jpeg'
+            example_contexts = get_example_context_data(logger)
+
+            prompt_messages_content = [
+                {
+                    "type": "text",
+                    "text": f"Please review and score the primary image (the first image presented) based on its visual characteristics and in the context of the following {len(example_contexts)} example images and their performance data. Provide a score (e.g., out of 10) and a brief rationale."
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{uploaded_image_mimetype};base64,{base64_uploaded_image}"}
+                }
+            ]
+
+            if not example_contexts:
+                logger.warning("No example contexts found. Proceeding with only the uploaded image.")
+                prompt_messages_content[0]["text"] = "Please review and score this image based on its visual characteristics. Provide a score (e.g., out of 10) and a brief rationale as no example data was available."
+            else:
+                for i, ex_data in enumerate(example_contexts):
+                    prompt_messages_content.append({
+                        "type": "text",
+                        "text": f"Example {i+1} (Filename: {ex_data['filename']}): Performance Info - {ex_data['performance_info']}"
+                    })
+                    prompt_messages_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{ex_data['mime_type']};base64,{ex_data['base64_image']}"}
+                    })
             
-            # Ensure Pillow supports the format or default to PNG
-            supported_formats_for_pillow_save = ["jpeg", "png", "gif", "bmp", "tiff"] # Common ones
-            if image_format.lower() not in supported_formats_for_pillow_save:
-                logger.warning(f"Original image format {image_format} might not be directly saveable by Pillow; defaulting to PNG for base64 encoding.")
-                image_format = "png" # Default to PNG if format is unusual or not directly supported by Pillow's save for BytesIO
-
-            img.save(buffered, format=image_format.upper())
-            base64_image = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            
-            historic_data = get_historic_data()
-            prompt_text = f"Please review this image. Historical context: {historic_data}"
-
-            say(f"Thanks <@{user_id}>! I've received your image. Processing it with AI now...")
-
-            # Call OpenAI API
             try:
                 chat_completion = openai_client.chat.completions.create(
-                    model="gpt-4o", # Or gpt-4-turbo, gpt-4o-mini
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt_text},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{mimetype};base64,{base64_image}"
-                                    }
-                                }
-                            ]
-                        }
-                    ],
-                    max_tokens=500
+                    model="gpt-4o", 
+                    messages=[{
+                        "role": "user",
+                        "content": prompt_messages_content
+                    }],
+                    max_tokens=700 
                 )
                 review = chat_completion.choices[0].message.content
-                say(f"<@{user_id}>, here's the review:
-{review}")
+                logger.info(f"Attempting to say final review in thread: {thread_ts_to_reply} in channel: {channel_id}") # LOG 4: Log before final say
+                say(text=f"<@{user_id}>, here's the review for your image \"{file_data.get('name')}\":\n{review}", channel=channel_id, thread_ts=thread_ts_to_reply)
             except Exception as e:
                 logger.error(f"Error calling OpenAI API: {e}")
-                say(f"Sorry <@{user_id}>, I encountered an error while trying to get a review from OpenAI.")
+                say(text=f"Sorry <@{user_id}>, I encountered an error with the AI review.", channel=channel_id, thread_ts=thread_ts_to_reply)
 
         else:
-            logger.info(f"File shared is not an image: {mimetype}. Skipping.")
-            # Optionally, you can inform the user if they share a non-image file
-            # say(f"<@{user_id}>, I can only process image files at the moment.")
+            logger.info(f"File shared is not an image: {slack_mimetype}. Skipping.")
+            # say(text=f"<@{user_id}>, I can only process image files. The file you shared was a {slack_mimetype}.", channel=channel_id, thread_ts=thread_ts_to_reply)
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Error downloading file: {e}")
-        say(f"Sorry <@{user_id}>, I had trouble downloading the file.")
+        say(text=f"Sorry <@{user_id}>, I had trouble downloading the file.", channel=channel_id, thread_ts=thread_ts_to_reply)
     except Exception as e:
         logger.error(f"Error processing file: {e}")
-        say(f"Sorry <@{user_id}>, an unexpected error occurred while processing your file.")
+        say(text=f"Sorry <@{user_id}>, an unexpected error occurred.", channel=channel_id, thread_ts=thread_ts_to_reply)
 
 
 @app.event("app_mention")
 def handle_app_mention_events(body, say, logger):
     """Handles mentions of the bot."""
-    user_id = body["event"]["user"]
-    text = body["event"]["text"]
-    logger.info(f"Bot mentioned by {user_id}: {text}")
-    say(f"Hi <@{user_id}>! You mentioned me. If you share an image, I can help review it.")
+    event = body["event"]
+    user_id = event["user"]
+    text = event["text"]
+    # To avoid double processing if a generic message handler also exists for app mentions
+    # we can check if this specific event was already processed by another handler if needed,
+    # but Bolt usually handles specificity well. The main issue is usually duplicate event subscriptions.
+    logger.info(f"handle_app_mention_events: Bot mentioned by {user_id}: {text} in channel {event.get('channel')}")
+    say(f"Hi <@{user_id}>! You mentioned me. If you share an image, I can help review it.") # This say does not need thread_ts unless the mention itself was in a thread and you want to continue it.
+
+# Add this handler if you want to acknowledge/log other message types or subtypes
+# without them showing as "unhandled".
+@app.event("message")
+def handle_generic_message_events(body, logger, say):
+    event = body.get("event", {})
+    event_type = event.get("type")
+    event_subtype = event.get("subtype")
+    text = event.get("text", "")
+    # Ensure authorizations is a list and has at least one element before accessing
+    authorizations = body.get("authorizations", [])
+    bot_id = authorizations[0].get("user_id") if authorizations else None
+
+    # Check if it's a message from the bot itself to avoid loops
+    if event.get("user") == bot_id or event.get("bot_id") is not None:
+        # logger.info("handle_generic_message_events: Ignoring event from bot itself.")
+        return
+        
+    # If it's a file_share message subtype, let the dedicated file_shared handler process it.
+    if event_subtype == "file_share":
+        logger.info(f"handle_generic_message_events: Detected file_share subtype. Attempting to delegate to handle_file_shared_events.")
+        # The handle_file_shared_events expects `body`, `say`, `logger`
+        # We need to ensure the `event` within the body for `handle_file_shared_events` is the one 
+        # that `file_shared` expects, which is usually the `files[0]` info combined with user/channel.
+        # For simplicity and directness, since file_shared handler already parses `event` from `body`,
+        # we can just call it directly. The `file_shared` handler will look into `event['files']` itself.
+        # However, the `@app.event('file_shared')` handler expects an event of type 'file_shared', not 'message'.
+        # So, we need to simulate the call or, better, refactor the core logic.
+        
+        # Let's call the file_shared_events logic directly if it's a file_share subtype
+        # We are essentially saying: if this generic message is a file share, run the file share logic.
+        # This bypasses the need for a separate @app.event("file_shared") if Slack consistently sends it this way.
+        # Alternatively, if @app.event("file_shared") IS working for some file shares, this might cause double processing.
+        # We will rely on the file_id to be present in the event['files'][0]['id'] as per Slack's structure for file_share subtype.
+        
+        # Check if there are files in the event, which is expected for file_share subtype
+        if event.get("files") and isinstance(event.get("files"), list) and len(event.get("files")) > 0:
+            # The handle_file_shared_events function is designed to be called by the Bolt framework
+            # with a specific structure for the `body` and `event` when the event type is `file_shared`.
+            # Here, the event type is `message` with `subtype: 'file_shared'`.
+            # The `event` object within the `body` for a `message` event with `subtype: 'file_shared'`
+            # is slightly different from a direct `file_shared` event type's event object.
+            # Specifically, the file_id is inside event['files'][0]['id'] for this message subtype.
+            # The original `@app.event('file_shared')` handler expects `event['file_id']`.
+            
+            # Simplest is to call the main logic of handle_file_shared_events directly, 
+            # passing the necessary parts or the whole body, and ensuring the logic inside 
+            # handle_file_shared_events can find `file_id` from `event['files'][0]['id']`
+            # For now, let's just call it, assuming the current handle_file_shared_events
+            # correctly gets file_id from event.get("file_id") or event.get("files")[0].get("id")
+            # The current handle_file_shared_events is already trying event.get("file_id")
+            # Let's adjust `handle_file_shared_events` to also check `event['files'][0]['id']`
+            return handle_file_shared_events(body, say, logger) #<<<< MODIFICATION POINT 1
+        else:
+            logger.warning("handle_generic_message_events: file_share subtype detected, but no files array found or empty.")
+            return
+
+    # Check if the text contains a mention of the bot. 
+    if bot_id and f"<@{bot_id}>" in text:
+        logger.info(f"handle_generic_message_events: Ignoring message with mention as it should be handled by app_mention: {text}")
+        return
+
+    if event_subtype == "message_deleted":
+        # logger.info(f"handle_generic_message_events: Ignoring deleted message event.")
+        return
+    
+    if event_subtype is not None:
+        logger.info(f"handle_generic_message_events: Received a message event with subtype: {event_subtype}")
+        logger.info(body)
+        return 
+
+    logger.info(f"handle_generic_message_events: Received a generic message (not a mention, file_share, or known subtype):")
+    logger.info(body)
+
 
 # Start your app
 if __name__ == "__main__":

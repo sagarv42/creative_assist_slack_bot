@@ -3,4 +3,6 @@ openai
 python-dotenv
 Pillow
 requests
-openpyxl 
+openpyxl
+pandas
+numpy

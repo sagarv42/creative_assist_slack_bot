@@ -1,6 +1,12 @@
 # Slack OpenAI Image Review Bot
 
-This project is a Python-based Slack bot that listens for images shared in Slack channels. When an image is detected, the bot downloads it, sends it to the OpenAI API (specifically a vision-capable model like GPT-4o) along with contextual historical data fetched from a local Excel file, and then posts the AI-generated review back to the Slack channel.
+This project is a Python-based Slack bot. When an image is uploaded to a designated Slack channel, the bot performs the following actions:
+1.  Downloads the uploaded image.
+2.  Collects a set of 'n' example images from a local directory.
+3.  Reads corresponding performance data for these example images from a local CSV file.
+4.  Sends the newly uploaded image, along with the 'n' example images and their performance data, to the OpenAI API (e.g., GPT-4o).
+5.  The OpenAI model then reviews and scores the uploaded image, using the provided examples for context.
+6.  Finally, the bot posts this AI-generated review and score back to the Slack channel.
 
 ## Features
 
@@ -10,22 +16,24 @@ This project is a Python-based Slack bot that listens for images shared in Slack
     *   Responds to `app_mention` events.
 *   **Image Processing:**
     *   Downloads images shared in Slack.
-    *   Encodes images to base64 for API transmission.
-    *   Handles common image types (JPEG, PNG, GIF, WEBP) and attempts to default to PNG for others.
+    *   Reads and processes local example images.
+    *   Encodes all images to base64 for API transmission.
 *   **OpenAI Integration:**
-    *   Utilizes the OpenAI API (e.g., `gpt-4o`) for image analysis and review.
-    *   Constructs prompts that include both the image and textual context.
-*   **Local Excel File Integration:**
-    *   Fetches historical/contextual data from a specified cell in a local Excel (`.xlsx`) file to provide richer context to the OpenAI model for reviews.
+    *   Utilizes the OpenAI API (e.g., `gpt-4o`) for comparative image analysis and review.
+    *   Constructs complex prompts including multiple images (the target image and context examples) and associated textual data (performance info for examples).
+*   **Local Context Data:**
+    *   Reads example image filenames and their performance descriptions from a local CSV file.
+    *   Loads example image files from a specified local directory.
 *   **Development & Testing:**
-    *   Includes a standalone script (`test_openai_vision.py`) to test OpenAI vision API integration with local images independently of the Slack bot.
+    *   Includes a standalone script (`test_openai_vision.py`) to test basic OpenAI vision API integration with a single local image.
 
 ## Prerequisites
 
 *   Python 3.8+
 *   A Slack Workspace where you can create and install apps.
 *   An OpenAI API Key with access to vision models (e.g., GPT-4o).
-*   A local Excel file (e.g., `historic_data.xlsx`) containing the historical data for context.
+*   A local directory containing example images.
+*   A local CSV file mapping example image filenames to their performance data.
 
 ## Project Structure
 
@@ -34,18 +42,17 @@ This project is a Python-based Slack bot that listens for images shared in Slack
 ├── .env                    # For storing API keys and tokens (create this manually)
 ├── .gitignore              # Specifies intentionally untracked files that Git should ignore
 ├── app.py                  # Main Slack bot application logic
-├── historic_data.xlsx      # Example: Local Excel file for historic data (create this manually)
+├── example_images/         # Directory to store your example context images
+│   ├── example1.jpg
+│   └── example2.png
+├── example_performance.csv # CSV file with performance data for example images (create this manually)
 ├── requirements.txt        # Python dependencies
-└── test_openai_vision.py   # Script to test OpenAI vision API with local images
+└── test_openai_vision.py   # Script to test OpenAI vision API with a single local image
 ```
 
 ## Setup Instructions
 
-1.  **Clone the Repository (if applicable):**
-    ```bash
-    # git clone <your-repo-url>
-    # cd <your-repo-name>
-    ```
+1.  **Clone the Repository (if applicable).**
 
 2.  **Create a Python Virtual Environment:**
     ```bash
@@ -65,32 +72,46 @@ This project is a Python-based Slack bot that listens for images shared in Slack
     SLACK_APP_TOKEN="xapp-your-slack-app-token-for-socket-mode"
     OPENAI_API_KEY="sk-your-openai-api-key"
     ```
-    *   Replace placeholder values with your actual tokens and API key.
 
-5.  **Prepare Local Excel File for Historic Data:**
-    *   Create an Excel file (e.g., `historic_data.xlsx`) in your project's root directory (or your preferred location).
-    *   Add the historical data/contextual description to a specific cell within this Excel file (e.g., cell `A1` of `Sheet1`).
-    *   Open `app.py` and update the following constants to match your Excel file setup:
-        ```python
-        LOCAL_EXCEL_FILE_PATH = "historic_data.xlsx"  # Path to your Excel file
-        EXCEL_SHEET_NAME = "Sheet1"                  # Name of the sheet containing the data
-        EXCEL_CELL = "A1"                            # Cell containing the historic data (e.g., "A1", "B5")
-        ```
+5.  **Prepare Local Example Images and Performance CSV:**
+    *   **Create `example_images/` directory:** In the project root, create a directory named `example_images` (or update `EXAMPLE_IMAGES_DIR` in `app.py` if you choose a different name/path).
+    *   **Add Example Images:** Place your example image files (e.g., `.jpg`, `.png`) into this directory.
+    *   **Create `example_performance.csv`:** In the project root, create a CSV file named `example_performance.csv` (or update `EXAMPLE_PERFORMANCE_CSV` in `app.py`).
+        *   This CSV must contain at least two columns: `image_filename` and `performance_info`.
+        *   Example content for `example_performance.csv`:
+            ```csv
+            image_filename,performance_info
+            example1.jpg,"Achieved high click-through rates (5%) and strong user engagement."
+            example2.png,"Performed well in A/B tests for brand recall, but lower conversion."
+            another_pic.jpeg,"Excellent for social media shares, mediocre on direct sales."
+            ```
+    *   **Configure `app.py` (if paths/settings differ from defaults):**
+        *   Open `app.py` and verify/update these constants if needed:
+            ```python
+            EXAMPLE_IMAGES_DIR = "./example_images/"
+            EXAMPLE_PERFORMANCE_CSV = "./example_performance.csv"
+            NUM_EXAMPLES_TO_INCLUDE = 3 # Adjust how many examples are sent
+            ```
 
 6.  **Configure Slack App:**
-    *   Go to [https://api.slack.com/apps](https://api.slack.com/apps) and create a new app or use an existing one.
-    *   **Enable Socket Mode:** In your app's settings under "Socket Mode", enable it. Generate an App-Level Token with the `connections:write` scope. This is your `SLACK_APP_TOKEN`.
-    *   **OAuth & Permissions:** Under "OAuth & Permissions", add the following Bot Token Scopes:
-        *   `app_mentions:read`
-        *   `chat:write`
-        *   `files:read`
-        Your `SLACK_BOT_TOKEN` is the "Bot User OAuth Token" found on this page after installing the app to your workspace.
-    *   **Event Subscriptions:** Under "Event Subscriptions", enable events.
-        *   Subscribe to the following bot events:
-            *   `app_mention`
-            *   `file_shared`
-    *   **App Home (Optional):** Enable the "Home Tab" under "App Home" settings for a better user experience if you plan to expand bot interactions there.
-    *   **Install/Reinstall App:** Install (or reinstall if you made changes) the app to your Slack workspace.
+    *   Go to your Slack app's settings page on `api.slack.com`.
+    *   **Basic Information:**
+        *   Ensure you have an "App-Level Token" generated with the `connections:write` scope. This is needed for Socket Mode and is used as `SLACK_APP_TOKEN` in your `.env` file.
+    *   **Socket Mode:**
+        *   Enable Socket Mode.
+    *   **Event Subscriptions:**
+        *   Enable events.
+        *   Subscribe to Bot Events:
+            *   `app_mention`: Allows your bot to receive an event when it's directly mentioned.
+            *   `file_shared`: Allows your bot to receive an event when a file is shared in a channel it's a part of.
+            *   *(Optional but Recommended for Robustness):* `message.channels` (or more specific `message.*` events like `message.im`, `message.mpim` if your bot operates in those contexts). This helps catch file shares that might arrive as generic messages with a `file_share` subtype, as handled in `app.py`.
+    *   **OAuth & Permissions:**
+        *   Navigate to the "OAuth & Permissions" page.
+        *   Ensure the following Bot Token Scopes are added:
+            *   `app_mentions:read`: Required for the `app_mention` event.
+            *   `chat:write`: Allows your bot to send messages.
+            *   `files:read`: Allows your bot to read files and their metadata (like download URLs).
+            *   *(If using `message.*` events):* `channels:history`, `groups:history`, `im:history`, `mpim:history` might be needed depending on the specific `message.*` events you subscribe to, to allow the bot to see messages in those contexts. For the current `app.py` which can handle `message.channels` for file shares, `channels:history` is a good addition.
 
 ## Running the Bot
 
@@ -109,7 +130,7 @@ This project is a Python-based Slack bot that listens for images shared in Slack
 
 ## Using the Bot
 
-*   **Image Review:** Upload an image to a channel where the bot is a member. The bot should acknowledge the image and then post a review from OpenAI, using context from your local Excel file.
+*   **Image Review:** Upload an image to a channel where the bot is a member. The bot will acknowledge the image, gather the local example images and their CSV data, and then post a review from OpenAI based on all this context.
 *   **Mention:** Mention the bot (e.g., `@YourBotName hello`) to see its direct response.
 
 ## Testing OpenAI Vision Separately
@@ -123,9 +144,3 @@ The `test_openai_vision.py` script allows you to test image sending to OpenAI di
     python test_openai_vision.py
     ```
 4.  The script will output the OpenAI API's description of the image.
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
-Please make sure to update tests as appropriate.
